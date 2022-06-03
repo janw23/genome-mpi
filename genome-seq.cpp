@@ -8,6 +8,8 @@
 #include<tuple>
 #include<cassert>
 
+#include<random>
+
 int num_occurences_naive(std::string const &genome, std::string const &query) {
     int num_occurences_naive = 0;
     std::size_t pos = 0;
@@ -20,6 +22,7 @@ int num_occurences_naive(std::string const &genome, std::string const &query) {
 
 template <typename T>
 void printvec(std::string name, std::vector<T> const &vec) {
+    return;
     std::cerr << name << ":";
     for (T e : vec) std::cerr << " " << e;
     std::cerr << "\n";
@@ -33,7 +36,6 @@ std::vector<std::size_t> gspf(std::string const &genome) {
     // TODO Squeeze k>1 - mers into B here to optimize num iterations.
     // TODO starting with k>1 would optimize runtime, but not mem usage.
     std::vector<std::size_t> B(genome.begin(), genome.end());
-    printvec("B", B);
 
     std::vector<std::size_t> SA(B.size());
 
@@ -51,10 +53,6 @@ std::vector<std::size_t> gspf(std::string const &genome) {
         }
     }
 
-    std::cerr << "Sort" << "\n";
-    printvec("B", B);
-    printvec("SA", SA);
-
     { // Rebucket
         std::size_t g = 0;
         std::size_t prev = B[0];
@@ -68,9 +66,6 @@ std::vector<std::size_t> gspf(std::string const &genome) {
         }
     }
 
-    std::cerr << "Rebucket-1" << "\n";
-    printvec("B", B);
-
     // Iterate algorithm, starting with k chosen for initial k-mers TODO here k=1
     for (std::size_t h = 1;; h *= 2) {
         { // Reorder to string-order. TODO in place?
@@ -81,15 +76,9 @@ std::vector<std::size_t> gspf(std::string const &genome) {
             std::swap(tmp, B);
         }
 
-        std::cerr << "h=" << h << "\n";
-        printvec("B", B);
-
         // Shift B.
         std::vector<std::size_t> B2(B.size());
         std::copy(B.begin() + h, B.end(), B2.begin()); // copy values shifted by h
-
-        printvec("B2", B2);
-        printvec("SA", SA);
 
         {   // Sort according to B, B2 keeping original indices.
             std::vector<std::tuple<std::size_t, std::size_t, std::size_t>> tmp(B.size());
@@ -105,14 +94,8 @@ std::vector<std::size_t> gspf(std::string const &genome) {
             }
         }
 
-        std::cerr << "Sort" << "\n";
-        printvec("B", B);
-        printvec("B2", B2);
-        printvec("SA", SA);
-
         // Rebucket.
         {
-            std::cerr << "Rebucket-2" << "\n";
             std::size_t g = 0;
             std::size_t prev = B[0];
             B[0] = 0;
@@ -125,7 +108,6 @@ std::vector<std::size_t> gspf(std::string const &genome) {
                 prev = B[i];
                 B[i] = g;
             }
-            printvec("B", B);
             if(singletons == B.size()) break; // Check algorithm-done condition.
         }
     }
@@ -137,15 +119,18 @@ int num_occurences(std::vector<std::size_t> const &genome_sa, std::string const 
     std::size_t leftmost, rightmost;
     bool leftmost_found = false, rightmost_found = false;
     
-    std::size_t l = 0, r = genome.size() - query.size(), c;
-    while (l < r) {
+    std::size_t l = 0, r = genome.size() - 1, c;
+    while (l <= r) {
         c = (l + r) / 2;
 
         int cmp = genome.compare(genome_sa[c], query.size(), query);
         if (cmp == 0) {
             r = c;
-            leftmost = c;
-            leftmost_found = true;
+            if (l == r) {
+                leftmost = c;
+                leftmost_found = true;
+                break;
+            }
         } else if (cmp > 0) {
             r = c - 1;
         } else {
@@ -155,15 +140,18 @@ int num_occurences(std::vector<std::size_t> const &genome_sa, std::string const 
     if (!leftmost_found) return 0;
 
     l = leftmost;
-    r = genome.size() - query.size();
-    while (l < r) {
+    r = genome.size() - 1;
+    while (l <= r) {
         c = (l + r + 1) / 2;
 
         int cmp = genome.compare(genome_sa[c], query.size(), query);
         if (cmp == 0) {
             l = c;
-            rightmost = c;
-            rightmost_found = true;
+            if (l == r) {
+                rightmost = c;
+                rightmost_found = true;
+                break;
+            }
         } else if (cmp > 0) {
             r = c - 1;
         } else {
@@ -176,21 +164,51 @@ int num_occurences(std::vector<std::size_t> const &genome_sa, std::string const 
 }
 
 int main() {
-    std::string genome = "ACGTACACACCCGCTACCGACCGTC$";
-    std::string query = "ACC";  
+    // std::string genome = "ACGTACACACCCGCTACCGACCGTC$";
+    // std::string query = "ACC";  
 
-    // std::cout << num_occurences_naive(genome, query) << std::endl;
+    // // std::cout << num_occurences_naive(genome, query) << std::endl;
 
-    auto genome_sa = gspf(genome);
-    assert(genome_sa.size() == genome.size());
+    // auto genome_sa = gspf(genome);
+    // assert(genome_sa.size() == genome.size());
 
-    for (auto i : genome_sa) {
-        std::cout << i << " ";
+    // for (auto i : genome_sa) {
+    //     std::cout << i << " ";
+    // }
+    // std::cout << std::endl;
+
+    // auto num = num_occurences(genome_sa, genome, query);
+    // std::cerr << "num occurences: " << num << "\n";
+    srand(1);
+
+    for (int test = 0; test < 1000; test++) {
+        static const std::string alphabet = "ACGT";
+        std::size_t genome_len = 5 + rand() % 10000;
+        
+        std::string genome;
+        genome.reserve(genome_len);
+
+        for (size_t i = 0; i < genome_len; i++) {
+            genome.push_back(alphabet[rand() % alphabet.size()]);
+        }
+        genome.push_back('$');
+        auto genome_sa = gspf(genome);
+
+        for (int num_query = 0; num_query < 10; num_query++) {
+            std::string query;
+            size_t query_len = 1 + rand() % 100;
+            query.reserve(query_len);  
+            
+            for (std::size_t i = 0; i < query_len; i++) {
+                query.push_back(alphabet[rand() % alphabet.size()]);
+            }
+
+            auto naive = num_occurences_naive(genome, query);
+            auto numsa = num_occurences(genome_sa, genome, query);
+
+            assert(naive == numsa);
+        }
     }
-    std::cout << std::endl;
-
-    auto num = num_occurences(genome_sa, genome, query);
-    std::cerr << "num occurences: " << num << "\n";
 
     return 0;
 }
