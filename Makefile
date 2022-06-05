@@ -1,8 +1,12 @@
-CC=g++
-CFLAGS=-Wall -Wextra -std=c++17
+SEQCC=g++
+PARCC=mpic++
+CFLAGS=-Wall -std=c++17 -O2
 
-genome_index: genome-seq.cpp
-	$(CC) $(CFLAGS) -o genome_index genome-seq.cpp
+genome_index: genome.cpp
+	$(PARCC) $(CFLAGS) -o genome_index genome.cpp
+
+genome_index_seq: genome-seq.cpp
+	$(SEQCC) $(CFLAGS) -o genome_index_seq genome-seq.cpp
 
 clean:
-	rm -f genome_index
+	rm -f genome_index_seq genome_index
