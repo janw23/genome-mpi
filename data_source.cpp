@@ -28,8 +28,8 @@ uint64_t DataSource::getNodeGenomeSize(int i) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
 
-    int totalSize = getTotalGenomeSize(i);
-    int nodeSize = (totalSize + nprocs - rank - 1) / nprocs;
+    MPI_Offset totalSize = getTotalGenomeSize(i);
+    MPI_Offset nodeSize = (totalSize + nprocs - rank - 1) / nprocs;
     assert(nodeSize > 0);
 
     return nodeSize;
@@ -40,9 +40,9 @@ uint64_t DataSource::getNodeGenomeOffset(int i) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
 
-    int totalSize = getTotalGenomeSize(i);
+    MPI_Offset totalSize = getTotalGenomeSize(i);
 
-    int offset = rank * (totalSize / nprocs) + std::min(totalSize % nprocs, rank);
+    MPI_Offset offset = rank * (totalSize / nprocs) + std::min(totalSize % nprocs, (MPI_Offset) rank);
 
     return offset;
 }
@@ -53,7 +53,7 @@ void DataSource::getNodeGenomeValues(int i, char *buffer) {
     MPI_File fh;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
-    int nodeSize = getNodeGenomeSize(i);
+    MPI_Offset nodeSize = getNodeGenomeSize(i);
     std::string filename = getGenomeFilename(i);
 
     assert(MPI_File_open(MPI_COMM_WORLD, filename.c_str(), MPI_MODE_RDONLY, MPI_INFO_NULL, &fh) == 0);
@@ -65,7 +65,9 @@ void DataSource::getNodeGenomeValues(int i, char *buffer) {
 
     buffer[nodeSize] = 0;
 }
+
 std::string DataSource::getGenomeFilename(int i) {
     return genome_in + "_" + std::to_string(i);
 }
+
 
