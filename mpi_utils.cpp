@@ -3,14 +3,22 @@
 // ################################ MPIContext ################################
 
 MPIContext::MPIContext(DataSource &data_source, MPI_Comm comm) 
-: comm(comm), rank(commRank(comm)), nprocs(commSize(comm)), data_chunks_size(nprocs) {
+: comm(comm), rank(commRank(comm)), nprocs(commSize(comm)), genome_sizes_prefix_sums(nprocs + 1, 0) {
     const size_t genome_idx = 0; // TODO impl should handle all genomes
     const uint64_t local_chunk_size = data_source.getNodeGenomeSize(genome_idx);
-    MPI_Alltoall(&local_chunk_size, 1, MPI_UINT64_T, data_chunks_size.data(), 1, MPI_UINT64_T, comm);
+    MPI_Error_Check(MPI_Allgather(&local_chunk_size, 1, MPI_UINT64_T, genome_sizes_prefix_sums.data() + 1, 1, MPI_UINT64_T, comm));
+
+    for (size_t i = 1; i < genome_sizes_prefix_sums.size(); i++) {
+        genome_sizes_prefix_sums[i] += genome_sizes_prefix_sums[i-1];
+    }
 }
 
-uint64_t MPIContext::getNodeDataSize(uint64_t node_rank) const {
-    return data_chunks_size[node_rank];
+uint64_t MPIContext::getNodeGenomeSize(int node_rank) const {
+    return genome_sizes_prefix_sums[node_rank + 1] - genome_sizes_prefix_sums[node_rank];
+}
+
+uint64_t MPIContext::getNodeGenomeOffset(int node_rank) const {
+    return genome_sizes_prefix_sums[node_rank];
 }
 
 int MPIContext::commRank(MPI_Comm comm) const {
