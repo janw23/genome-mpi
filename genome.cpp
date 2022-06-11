@@ -142,18 +142,16 @@ int main(int argc, char *argv[]) {
 
     auto [num_genomes, num_queries, genome_in, queries_in, queries_out] = parseArgs(argc, argv);
     DataSource data_source(genome_in.data());
-    MPIContext mpi_context(data_source, MPI_COMM_WORLD);
 
-    // TODO just for tests read a chunk of first genome
-    std::vector<char> genome(data_source.getNodeGenomeSize(0));
-    data_source.getNodeGenomeValues(0, genome.data());
-    if (mpi_context.rankLast()) genome.push_back('$'); // put guard at the end
+    mpi_vector<char> test(MPI_COMM_WORLD, 3);
+
+    // mpi_vector<char> genome(MPI_COMM_WORLD, data_source, 0);
+
+    // if (mpi_context.rankLast()) genome.push_back('$'); // put guard at the end
     
-    std::cout << "I am node " << mpi_context.rank << " and got initial genome: " << genome.data() << "\n";
+    // std::cout << "I am node " << mpi_context.rank << " and got initial genome: " << genome.data() << "\n";
 
-    auto B = suffixArray_OBSOLETE(genome, mpi_context);
-
-    std::cout << "I am node " << mpi_context.rank << ", B: " << B << "\n";
+    // std::cout << "I am node " << mpi_context.rank << ", B: " << B << "\n";
 
     MPI_Finalize();
     return 0;

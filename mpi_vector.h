@@ -9,8 +9,8 @@
 template <typename T>
 class mpi_vector {
 public:
-    mpi_vector(MPI_COMM comm);
-    mpi_vector(MPI_COMM comm, size_t size);
+    mpi_vector(MPI_Comm comm);
+    mpi_vector(MPI_Comm comm, size_t size);
 
     T &operator[](size_t index) const;
 
@@ -27,50 +27,56 @@ private:
     std::vector<T> datavec;
     int rank;
     int nprocs;
-    MPI_COMM comm;
+    MPI_Comm comm;
 
     std::vector<size_t> chunk_sizes;
     uint64_t chunk_offset;
     uint64_t global_size;
 
     void update_chunks();
-}
+};
 
-mpi_vector::mpi_vector(MPI_COMM comm) : comm(comm) {
+template <typename T>
+mpi_vector<T>::mpi_vector(MPI_Comm comm) : comm(comm) {
     MPI_Comm_rank(comm, &rank);
     MPI_Comm_size(comm, &nprocs);
-    update_chunks();
+    chunk_sizes = std::vector<size_t>(nprocs);
 }
 
-mpi_vector::mpi_vector(MPI_COMM comm, size_t size) : mpi_vector(comm), datavec(size) {
+template <typename T>
+mpi_vector<T>::mpi_vector(MPI_Comm comm, size_t size) : mpi_vector(comm) {
+    datavec = std::vector<T>(size);
     update_chunks();
 }
 
 template <typename T>
-T &mpi_vector::operator[](size_t index) const {
+T &mpi_vector<T>::operator[](size_t index) const {
     return datavec[index];
 }
 
-size_t mpi_vector::size() const {
+template <typename T>
+size_t mpi_vector<T>::size() const {
     return datavec.size();
 }
 
 template <typename T>
-void mpi_vector::push_back(T elem) {
+void mpi_vector<T>::push_back(T elem) {
     datavec.push_back(std::move(elem));
     update_chunks();
 }
 
-uint64_t mpi_vector::global_index(size_t index) const {
+template <typename T>
+uint64_t mpi_vector<T>::global_index(size_t index) const {
     return chunk_offset + index;
 }
 
-uint64_t mpi_vector::node_with_global_index(uint64_t global_index) const {
+template <typename T>
+uint64_t mpi_vector<T>::node_with_global_index(uint64_t global_index) const {
     assert(global_index < global_size);
 
     // This brutal solution is okay because there are not that many nodes.
     uint64_t offset = 0;
-    for (size_t i = 0; i < chunk_sizes; i++) {
+    for (size_t i = 0; i < chunk_sizes.size(); i++) {
         if (offset <= global_index && global_index < offset + chunk_sizes[i]) {
             return i;
         }
@@ -79,6 +85,24 @@ uint64_t mpi_vector::node_with_global_index(uint64_t global_index) const {
 
     assert(false);
     return 0;
+}
+
+template <typename T>
+void mpi_vector<T>::update_chunks() {
+    assert(rank > 0);
+    assert(nprocs > 0);
+    assert(chunk_sizes.size() == static_cast<size_t>(nprocs));
+
+    // Gather all chunk sizes from other nodes.
+    size_t chunk_size = size();
+    MPI_Allgather(&chunk_size, 1, MPI_UINT64_T, chunk_sizes.data(), 1, MPI_INT64_T, comm);
+
+    uint64_t offset = 0;
+    for (size_t i = 0; i < chunk_sizes.size(); i++) {
+        if (i == static_cast<size_t>(rank)) chunk_offset = offset;
+        offset += chunk_sizes[i];
+    }
+    global_size = offset;
 }
 
 #endif // _MPI_VECTOR_H_
