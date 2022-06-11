@@ -10,11 +10,15 @@
 template <typename T>
 class mpi_vector {
 public:
+    const MPI_Comm comm;
+    const int rank;
+    const int nprocs;
+
     mpi_vector(MPI_Comm comm);
     mpi_vector(MPI_Comm comm, size_t size);
     mpi_vector(MPI_Comm comm, DataSource &data_source, size_t genome_index);
 
-    T &operator[](size_t index) const;
+    T &operator[](size_t index);
 
     void push_back(T elem);
 
@@ -23,13 +27,15 @@ public:
     uint64_t global_index(size_t index) const;
 
     size_t node_with_global_index(uint64_t index) const;
+
+    // Wrapped MPI operations
+
+    // Gathers all data at process with [rank]. Other processes get empty vector.
+    std::vector<T> gather(int rank);
     
 
 private:
     std::vector<T> datavec;
-    int rank;
-    int nprocs;
-    MPI_Comm comm;
 
     std::vector<size_t> chunk_sizes;
     uint64_t chunk_offset;
@@ -38,12 +44,21 @@ private:
     void update_chunks();
 };
 
-template <typename T>
-mpi_vector<T>::mpi_vector(MPI_Comm comm) : comm(comm) {
+static int get_rank(MPI_Comm comm) {
+    int rank;
     MPI_Comm_rank(comm, &rank);
-    MPI_Comm_size(comm, &nprocs);
-    chunk_sizes = std::vector<size_t>(nprocs);
+    return rank;
 }
+
+static int get_nprocs(MPI_Comm comm) {
+    int nprocs;
+    MPI_Comm_size(comm, &nprocs);
+    return nprocs;
+}
+
+template <typename T>
+mpi_vector<T>::mpi_vector(MPI_Comm comm)
+: comm(comm), rank(get_rank(comm)), nprocs(get_nprocs(comm)), chunk_sizes(nprocs) {}
 
 template <typename T>
 mpi_vector<T>::mpi_vector(MPI_Comm comm, size_t size) : mpi_vector(comm) {
@@ -60,7 +75,7 @@ mpi_vector<char>::mpi_vector(MPI_Comm comm, DataSource &data_source, size_t geno
 }
 
 template <typename T>
-T &mpi_vector<T>::operator[](size_t index) const {
+T &mpi_vector<T>::operator[](size_t index) {
     return datavec[index];
 }
 
@@ -71,7 +86,9 @@ size_t mpi_vector<T>::size() const {
 
 template <typename T>
 void mpi_vector<T>::push_back(T elem) {
-    datavec.push_back(std::move(elem));
+    if (rank == nprocs - 1) {
+        datavec.push_back(std::move(elem));
+    }
     update_chunks();
 }
 
@@ -99,7 +116,7 @@ uint64_t mpi_vector<T>::node_with_global_index(uint64_t global_index) const {
 
 template <typename T>
 void mpi_vector<T>::update_chunks() {
-    assert(rank > 0);
+    assert(rank >= 0);
     assert(nprocs > 0);
     assert(chunk_sizes.size() == static_cast<size_t>(nprocs));
 
@@ -114,5 +131,29 @@ void mpi_vector<T>::update_chunks() {
     }
     global_size = offset;
 }
+
+
+template <typename T>
+std::vector<T> mpi_vector<T>::gather(int root) {
+    if (rank == root) {
+        std::vector<T> buff(global_size);
+        std::vector<int> recvcounts(chunk_sizes.size());
+        std::vector<int> displs(chunk_sizes.size());
+
+        int offset = 0;
+        for (size_t i = 0; i < chunk_sizes.size(); i++){
+            recvcounts[i] = sizeof(T) * chunk_sizes[i];
+            displs[i] = offset;
+            offset += recvcounts[i];
+        }
+
+        MPI_Gatherv(datavec.data(), sizeof(T) * datavec.size(), MPI_BYTE, buff.data(), recvcounts.data(), displs.data(), MPI_BYTE, root, comm);
+        return buff;
+    } else {
+        MPI_Gatherv(datavec.data(), sizeof(T) * datavec.size(), MPI_BYTE, nullptr, nullptr, nullptr, nullptr, root, comm);
+        return std::vector<T>();
+    }
+}
+
 
 #endif // _MPI_VECTOR_H_

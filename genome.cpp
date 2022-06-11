@@ -18,6 +18,14 @@ std::ostream &operator<<(std::ostream &os, const std::vector<T> &vec) {
     }
     return os;
 }
+template <typename T>
+std::ostream &operator<<(std::ostream &os, mpi_vector<T> &vec) {
+    for (size_t i = 0; i < vec.size(); i++) {
+        os << vec[i];
+        if (i < vec.size() - 1) os << " ";
+    }
+    return os;
+}
 
 
 static std::tuple<uint64_t, uint64_t, std::string, std::string, std::string>
@@ -132,7 +140,7 @@ suffixArray_OBSOLETE(std::vector<char> genome_chunk, const MPIContext &mpi_conte
 // TODO in the end make it work on vecot rof mpi_vectors
 static mpi_vector<size_t>
 suffixArray(mpi_vector<char> &genome) {
-
+    return mpi_vector<size_t>(genome.comm, 10);
 }
 
 
@@ -144,12 +152,13 @@ int main(int argc, char *argv[]) {
     DataSource data_source(genome_in.data());
 
     mpi_vector<char> genome(MPI_COMM_WORLD, data_source, 0);
-
-    // if (mpi_context.rankLast()) genome.push_back('$'); // put guard at the end
+    genome.push_back('$');
     
-    // std::cout << "I am node " << mpi_context.rank << " and got initial genome: " << genome.data() << "\n";
+    std::cout << "Node[" << genome.rank << "]: got genome: " << genome << "\n";
 
-    // std::cout << "I am node " << mpi_context.rank << ", B: " << B << "\n";
+    auto B = suffixArray(genome);
+
+    std::cout << "Node[" << genome.rank << "] B: " << B << "\n";
 
     MPI_Finalize();
     return 0;
