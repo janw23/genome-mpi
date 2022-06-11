@@ -22,6 +22,8 @@ public:
 
     T &operator[](size_t index);
 
+    const T &operator[](size_t index) const;
+
     void push_back(T elem);
 
     const std::vector<T> &local_data() const;
@@ -95,6 +97,11 @@ mpi_vector<T>::mpi_vector(const mpi_vector<T2> &vec) : mpi_vector(vec.comm) {
 
 template <typename T>
 T &mpi_vector<T>::operator[](size_t index) {
+    return datavec[index];
+}
+
+template <typename T>
+const T &mpi_vector<T>::operator[](size_t index) const {
     return datavec[index];
 }
 

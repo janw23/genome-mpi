@@ -55,22 +55,17 @@ static mpi_vector<size_t>
 suffixArray(mpi_vector<char> &genome) {
     assert(genome.rank != genome.nprocs - 1 || genome[genome.size() - 1] == '$');
     mpi_vector<size_t> B(genome);
-    mpi_vector<size_t> SA(B.comm, B.size());
+    mpi_vector<uint64_t> SA(B.comm, B.size());
 
     { // Sort
-        mpi_vector<std::pair<size_t, size_t>> tmp(B.comm, B.size());
-        for (size_t i = 0; i < tmp.size(); i++) {
-            tmp[i].first = B[i];
-            tmp[i].second = genome.global_offset() + i;
-        }
-
         auto comp = [](const std::pair<size_t, size_t> &a, const std::pair<size_t, size_t> &b){ return a.first < b.first; };
+        auto tmp = indexed(B);
         mpi_sort(tmp, comp);
+        unpack_indexed(tmp, B, SA);
+    }
 
-        for (size_t i = 0; i < tmp.size(); i++) {
-            B[i] = tmp[i].first;
-            SA[i] = tmp[i].second;
-        }
+    { // Rebucket
+
     }
 
     return B;
