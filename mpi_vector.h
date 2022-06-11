@@ -17,10 +17,14 @@ public:
     mpi_vector(MPI_Comm comm);
     mpi_vector(MPI_Comm comm, size_t size);
     mpi_vector(MPI_Comm comm, DataSource &data_source, size_t genome_index);
+    template <typename T2>
+    mpi_vector(const mpi_vector<T2> &vec);
 
     T &operator[](size_t index);
 
     void push_back(T elem);
+
+    const std::vector<T> &local_data() const;
 
     size_t size() const;
 
@@ -75,8 +79,22 @@ mpi_vector<char>::mpi_vector(MPI_Comm comm, DataSource &data_source, size_t geno
 }
 
 template <typename T>
+template <typename T2>
+mpi_vector<T>::mpi_vector(const mpi_vector<T2> &vec) : mpi_vector(vec.comm) {
+    datavec = std::vector<T>(vec.local_data().size());
+    // We copy this way to allow type conversion.
+    std::copy(vec.local_data().cbegin(), vec.local_data().cend(), datavec.begin());
+    update_chunks();
+}
+
+template <typename T>
 T &mpi_vector<T>::operator[](size_t index) {
     return datavec[index];
+}
+
+template <typename T>
+const std::vector<T> &mpi_vector<T>::local_data() const {
+    return datavec;
 }
 
 template <typename T>

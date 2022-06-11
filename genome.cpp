@@ -140,7 +140,9 @@ suffixArray_OBSOLETE(std::vector<char> genome_chunk, const MPIContext &mpi_conte
 // TODO in the end make it work on vecot rof mpi_vectors
 static mpi_vector<size_t>
 suffixArray(mpi_vector<char> &genome) {
-    return mpi_vector<size_t>(genome.comm, 10);
+    assert(genome.rank != genome.nprocs - 1 || genome[genome.size() - 1] == '$');
+    mpi_vector<size_t> B(genome);
+    return B;
 }
 
 
