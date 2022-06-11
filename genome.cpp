@@ -65,7 +65,19 @@ suffixArray(mpi_vector<char> &genome) {
     }
 
     { // Rebucket
-
+        std::pair<size_t, size_t> context = {0, 0}; // prevB, maxB
+        B.iter_apply(context, [&B](decltype(context) &ctx, size_t idx) {
+            auto [prev, max] = ctx;
+            if (prev != B[idx]) {
+                prev = B[idx];
+                B[idx] = B.global_index(idx);
+                max = B[idx];
+            } else {
+                prev = B[idx];
+                B[idx] = max;
+            }
+            ctx = {prev, max};
+        });
     }
 
     return B;

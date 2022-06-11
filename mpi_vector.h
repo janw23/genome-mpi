@@ -21,12 +21,14 @@ public:
     mpi_vector(const mpi_vector<T2> &vec);
 
     T &operator[](size_t index);
-
     const T &operator[](size_t index) const;
 
     void push_back(T elem);
 
     const std::vector<T> &local_data() const;
+
+    typename std::vector<T>::const_iterator cbegin() const;
+    typename std::vector<T>::const_iterator cend() const;
 
     size_t size() const;
 
@@ -35,7 +37,10 @@ public:
 
     size_t node_with_global_index(uint64_t index) const;
 
-    // Wrapped MPI operations
+    template <typename Context, typename Func>
+    void iter_apply(Context ctx, Func f);
+
+    // Wrapped standard MPI operations
 
     // Gathers all data at process with [root]. Other processes get empty vector.
     std::vector<T> gather(int root);
@@ -45,6 +50,7 @@ public:
     // [data] must have the same size as global_size.
     void scatter(const std::vector<T> &data, int root);
     
+
 
 private:
     std::vector<T> datavec;
@@ -111,6 +117,16 @@ const std::vector<T> &mpi_vector<T>::local_data() const {
 }
 
 template <typename T>
+typename std::vector<T>::const_iterator mpi_vector<T>::cbegin() const {
+    return datavec.cbegin();
+}
+
+template <typename T>
+typename std::vector<T>::const_iterator mpi_vector<T>::cend() const {
+    return datavec.cend();
+}
+
+template <typename T>
 size_t mpi_vector<T>::size() const {
     return datavec.size();
 }
@@ -169,6 +185,20 @@ void mpi_vector<T>::update_chunks() {
 }
 
 template <typename T>
+template <typename Context, typename Func>
+void mpi_vector<T>::iter_apply(Context ctx, Func f) {
+    if (rank > 0) {
+        MPI_Recv(&ctx, sizeof(ctx), MPI_BYTE, rank - 1, MPI_ANY_TAG, comm, MPI_STATUS_IGNORE);
+    }
+    for (size_t i = 0; i < size(); i++) {
+        f(ctx, i);
+    }
+    if (rank < nprocs - 1) {
+        MPI_Send(&ctx, sizeof(ctx), MPI_BYTE, rank + 1, 0, comm);
+    }
+}
+
+template <typename T>
 static std::pair<std::vector<int>, std::vector<int>>
 counts_displacements(const std::vector<size_t> &chunk_sizes) {
     std::vector<int> counts(chunk_sizes.size());
@@ -183,6 +213,25 @@ counts_displacements(const std::vector<size_t> &chunk_sizes) {
 
     return {counts, displs};
 }
+
+// template <typename T>
+// T mpi_vector<T>::last_from_prev_chunk(T default_val) {
+//     if (rank == 0) {
+//         MPI_Send(&datavec[datavec.size() - 1], sizeof(T), MPI_BYTE, rank + 1, 0, comm);
+//         return default_val; 
+//     } else if (rank == nprocs - 1) {
+//         T buf;
+//         MPI_Sendrecv(
+//             &datavec[datavec.size() - 1], sizeof(T), MPI_BBYTE, rank + 1, 0,
+//             &buf, sizeof(T), MPI_BYTE, rank - 1, MPI_ANY_TAG, comm, MPI_STATUS_IGNORE
+//         );
+//         return buf;
+//     } else {
+//         T buf;
+//         MPI_Recv(&buf, sizeof(T), MPI_BYTE, rank - 1, MPI_ANY_TAG, comm, MPI_STATUS_IGNORE);
+//         return buf;
+//     }
+// }
 
 template <typename T>
 std::vector<T> mpi_vector<T>::gather(int root) {
@@ -204,7 +253,6 @@ std::vector<T> mpi_vector<T>::gather(int root) {
     }
 }
 
-
 template <typename T>
 void mpi_vector<T>::scatter(const std::vector<T> &data, int root) {
     if (rank == root) {
@@ -220,5 +268,6 @@ void mpi_vector<T>::scatter(const std::vector<T> &data, int root) {
         );
     }
 }
+
 
 #endif // _MPI_VECTOR_H_
