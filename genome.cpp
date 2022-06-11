@@ -44,11 +44,11 @@ parseArgs(int argc, char *argv[]) {
 
 static std::vector<size_t>
 suffixArray(std::vector<char> genome_chunk, const MPIContext &mpi_context) {
+    assert(!mpi_context.rankLast() || genome_chunk[genome_chunk.size() - 1] == '$');
+    assert(!mpi_context.rankLast() || mpi_context.getNodeGenomeSize(mpi_context.rank) == genome_chunk.size());
+
     auto genome_offset = mpi_context.getNodeGenomeOffset(mpi_context.rank);
-    if (mpi_context.rank == mpi_context.nprocs - 1) {
-        //genome_chunk.push_back('$');
-    }
-    std::vector<size_t> B(genome_chunk.size());
+    std::vector<size_t> B(genome_chunk.size()); // TODO fit more chars in one machine word
     std::copy(genome_chunk.begin(), genome_chunk.end(), B.begin());
     std::vector<size_t> SA(B.size());
 
@@ -68,20 +68,64 @@ suffixArray(std::vector<char> genome_chunk, const MPIContext &mpi_context) {
         }
     }
 
-    return SA;
+    { // Rebucket
+        // TODO I could add data overlap by default to optimize communication. So that boundaries would not need to be changed.
+        // Receive the boundary.
+        size_t prevB = 0, maxB = 0;
+        if (mpi_context.rank > 0) {
+            size_t tmp[2];
+            MPI_Recv(&tmp, 2, MPI_UINT64_T, mpi_context.rank - 1, MPI_ANY_TAG, mpi_context.comm, MPI_STATUS_IGNORE);
+            prevB = tmp[0];
+            maxB = tmp[1];
+        }
 
+        // Perform local rebucketing.
+        for (size_t i = 0; i < B.size(); i++) {
+            if (prevB != B[i]) {
+                prevB = B[i];
+                B[i] = genome_offset + i;
+                maxB = B[i];
+            } else {
+                prevB = B[i];
+                B[i] = maxB;
+            }
+        }
 
-    // Rebucket
+        // Send the boundary.
+        if (!mpi_context.rankLast()) {
+            size_t tmp[2];
+            tmp[0] = prevB;
+            tmp[1] = maxB;
+            MPI_Send(&tmp, 2, MPI_UINT64_T, mpi_context.rank+1, 0, mpi_context.comm);
+        }
+
+        // if (mpi_context.rankFirst()) MPI_Send(&B[B.size()-1], 1, MPI_UINT64_T, mpi_context.rank+1, 0, mpi_context.comm);
+        // else if (mpi_context.rankLast()) MPI_Recv(&prevB, 1, MPI_UINT64_T, mpi_context.rank-1, MPI_ANY_TAG, mpi_context.comm, MPI_STATUS_IGNORE);
+        // else MPI_Sendrecv(&B[B.size()-1], 1, MPI_UINT64_T, mpi_context.rank+1, 0, &prevB, 1, MPI_UINT64_T, mpi_context.rank-1, MPI_ANY_TAG, mpi_context.comm, MPI_STATUSES_IGNORE);
+        // MPI_Scan(MPI_IN_PLACE, B.data(), B.size(), MPI_UINT64_T, MPI_MAX, mpi_context.comm);
+        return B;
+    }
 
     // Loop h=k, 2k, 4k, 8k, ...:
-    //  reorder to string order
-    //  check done
-    //  B2 := shift B by h
-    //  (B, B2, SA) := Sort (B, B2, idx)
-    //  rebucket(B, B2)
-    //  done := check-all-singleton(B)
+    for (size_t h = 1;; h *= 2) {
+        { // Reorder to string order
+            // This means sending B[i] to node resp. for SA[i].
+            // TODO I need SA[i] -> rank translation 
+            // bucket elems according to the target node
+            // exchange bucket sizes
+            // alltoallv in place
+            
+        }
 
-    // return SA
+
+        //  check done
+        //  B2 := shift B by h
+        //  (B, B2, SA) := Sort (B, B2, idx)
+        //  rebucket(B, B2)
+        //  done := check-all-singleton(B)
+    }
+
+    return SA;
 }
 
 
@@ -96,12 +140,13 @@ int main(int argc, char *argv[]) {
     // TODO just for tests read a chunk of first genome
     std::vector<char> genome(data_source.getNodeGenomeSize(0));
     data_source.getNodeGenomeValues(0, genome.data());
+    if (mpi_context.rankLast()) genome.push_back('$'); // put guard at the end
     
     std::cout << "I am node " << mpi_context.rank << " and got initial genome: " << genome.data() << "\n";
 
-    auto SA = suffixArray(genome, mpi_context);
+    auto B = suffixArray(genome, mpi_context);
 
-    std::cout << "I am node " << mpi_context.rank << ", SA: " << SA << "\n";
+    std::cout << "I am node " << mpi_context.rank << ", B: " << B << "\n";
 
     MPI_Finalize();
     return 0;

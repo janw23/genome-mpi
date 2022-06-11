@@ -18,6 +18,10 @@ public:
     MPIContext(DataSource &data_source, MPI_Comm comm);
     uint64_t getNodeGenomeSize(int node_rank) const;
     uint64_t getNodeGenomeOffset(int node_rank) const;
+    uint64_t getNodeWithIndexOfData(uint64_t idx) const;
+
+    bool rankFirst() const;
+    bool rankLast() const;
 
 private:
     std::vector<uint64_t> genome_sizes_prefix_sums;
