@@ -5,12 +5,14 @@
 #include <cinttypes>
 #include <vector>
 #include <cassert>
+#include "data_source.h"
 
 template <typename T>
 class mpi_vector {
 public:
     mpi_vector(MPI_Comm comm);
     mpi_vector(MPI_Comm comm, size_t size);
+    mpi_vector(MPI_Comm comm, DataSource &data_source, size_t genome_index);
 
     T &operator[](size_t index) const;
 
@@ -46,6 +48,14 @@ mpi_vector<T>::mpi_vector(MPI_Comm comm) : comm(comm) {
 template <typename T>
 mpi_vector<T>::mpi_vector(MPI_Comm comm, size_t size) : mpi_vector(comm) {
     datavec = std::vector<T>(size);
+    update_chunks();
+}
+
+template <>
+mpi_vector<char>::mpi_vector(MPI_Comm comm, DataSource &data_source, size_t genome_index) 
+: mpi_vector(comm) {
+    datavec = std::vector<char>(data_source.getNodeGenomeSize(genome_index));
+    data_source.getNodeGenomeValues(genome_index, datavec.data());
     update_chunks();
 }
 

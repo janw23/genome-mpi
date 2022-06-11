@@ -143,9 +143,7 @@ int main(int argc, char *argv[]) {
     auto [num_genomes, num_queries, genome_in, queries_in, queries_out] = parseArgs(argc, argv);
     DataSource data_source(genome_in.data());
 
-    mpi_vector<char> test(MPI_COMM_WORLD, 3);
-
-    // mpi_vector<char> genome(MPI_COMM_WORLD, data_source, 0);
+    mpi_vector<char> genome(MPI_COMM_WORLD, data_source, 0);
 
     // if (mpi_context.rankLast()) genome.push_back('$'); // put guard at the end
     
