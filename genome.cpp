@@ -7,6 +7,7 @@
 #include <cassert>
 #include "data_source.h"
 #include "mpi_utils.h"
+#include "mpi_vector.h"
 
 // DEBUG HELPERS
 template <typename T>
@@ -43,7 +44,7 @@ parseArgs(int argc, char *argv[]) {
 
 
 static std::vector<size_t>
-suffixArray(std::vector<char> genome_chunk, const MPIContext &mpi_context) {
+suffixArray_OBSOLETE(std::vector<char> genome_chunk, const MPIContext &mpi_context) {
     assert(!mpi_context.rankLast() || genome_chunk[genome_chunk.size() - 1] == '$');
     assert(!mpi_context.rankLast() || mpi_context.getNodeGenomeSize(mpi_context.rank) == genome_chunk.size());
 
@@ -128,6 +129,12 @@ suffixArray(std::vector<char> genome_chunk, const MPIContext &mpi_context) {
     return SA;
 }
 
+// TODO in the end make it work on vecot rof mpi_vectors
+static mpi_vector<size_t>
+suffixArray(mpi_vector<char> &genome) {
+
+}
+
 
 int main(int argc, char *argv[]) {
     MPI_Init(&argc, &argv);
@@ -144,7 +151,7 @@ int main(int argc, char *argv[]) {
     
     std::cout << "I am node " << mpi_context.rank << " and got initial genome: " << genome.data() << "\n";
 
-    auto B = suffixArray(genome, mpi_context);
+    auto B = suffixArray_OBSOLETE(genome, mpi_context);
 
     std::cout << "I am node " << mpi_context.rank << ", B: " << B << "\n";
 
