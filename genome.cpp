@@ -50,26 +50,22 @@ parseArgs(int argc, char *argv[]) {
     }
 }
 
-
-static std::vector<size_t>
-suffixArray_OBSOLETE(std::vector<char> genome_chunk, const MPIContext &mpi_context) {
-    assert(!mpi_context.rankLast() || genome_chunk[genome_chunk.size() - 1] == '$');
-    assert(!mpi_context.rankLast() || mpi_context.getNodeGenomeSize(mpi_context.rank) == genome_chunk.size());
-
-    auto genome_offset = mpi_context.getNodeGenomeOffset(mpi_context.rank);
-    std::vector<size_t> B(genome_chunk.size()); // TODO fit more chars in one machine word
-    std::copy(genome_chunk.begin(), genome_chunk.end(), B.begin());
-    std::vector<size_t> SA(B.size());
+// TODO in the end make it work on vecot rof mpi_vectors
+static mpi_vector<size_t>
+suffixArray(mpi_vector<char> &genome) {
+    assert(genome.rank != genome.nprocs - 1 || genome[genome.size() - 1] == '$');
+    mpi_vector<size_t> B(genome);
+    mpi_vector<size_t> SA(B.comm, B.size());
 
     { // Sort
-        std::vector<std::pair<size_t, size_t>> tmp(B.size());
+        mpi_vector<std::pair<size_t, size_t>> tmp(B.comm, B.size());
         for (size_t i = 0; i < tmp.size(); i++) {
             tmp[i].first = B[i];
-            tmp[i].second = genome_offset + i;
+            tmp[i].second = genome.global_offset() + i;
         }
 
         auto comp = [](const std::pair<size_t, size_t> &a, const std::pair<size_t, size_t> &b){ return a.first < b.first; };
-        mpiSort(tmp, comp, mpi_context);
+        mpi_sort(tmp, comp);
 
         for (size_t i = 0; i < tmp.size(); i++) {
             B[i] = tmp[i].first;
@@ -77,71 +73,6 @@ suffixArray_OBSOLETE(std::vector<char> genome_chunk, const MPIContext &mpi_conte
         }
     }
 
-    { // Rebucket
-        // TODO I could add data overlap by default to optimize communication. So that boundaries would not need to be changed.
-        // Receive the boundary.
-        size_t prevB = 0, maxB = 0;
-        if (mpi_context.rank > 0) {
-            size_t tmp[2];
-            MPI_Recv(&tmp, 2, MPI_UINT64_T, mpi_context.rank - 1, MPI_ANY_TAG, mpi_context.comm, MPI_STATUS_IGNORE);
-            prevB = tmp[0];
-            maxB = tmp[1];
-        }
-
-        // Perform local rebucketing.
-        for (size_t i = 0; i < B.size(); i++) {
-            if (prevB != B[i]) {
-                prevB = B[i];
-                B[i] = genome_offset + i;
-                maxB = B[i];
-            } else {
-                prevB = B[i];
-                B[i] = maxB;
-            }
-        }
-
-        // Send the boundary.
-        if (!mpi_context.rankLast()) {
-            size_t tmp[2];
-            tmp[0] = prevB;
-            tmp[1] = maxB;
-            MPI_Send(&tmp, 2, MPI_UINT64_T, mpi_context.rank+1, 0, mpi_context.comm);
-        }
-
-        // if (mpi_context.rankFirst()) MPI_Send(&B[B.size()-1], 1, MPI_UINT64_T, mpi_context.rank+1, 0, mpi_context.comm);
-        // else if (mpi_context.rankLast()) MPI_Recv(&prevB, 1, MPI_UINT64_T, mpi_context.rank-1, MPI_ANY_TAG, mpi_context.comm, MPI_STATUS_IGNORE);
-        // else MPI_Sendrecv(&B[B.size()-1], 1, MPI_UINT64_T, mpi_context.rank+1, 0, &prevB, 1, MPI_UINT64_T, mpi_context.rank-1, MPI_ANY_TAG, mpi_context.comm, MPI_STATUSES_IGNORE);
-        // MPI_Scan(MPI_IN_PLACE, B.data(), B.size(), MPI_UINT64_T, MPI_MAX, mpi_context.comm);
-        return B;
-    }
-
-    // Loop h=k, 2k, 4k, 8k, ...:
-    for (size_t h = 1;; h *= 2) {
-        { // Reorder to string order
-            // This means sending B[i] to node resp. for SA[i].
-            // TODO I need SA[i] -> rank translation 
-            // bucket elems according to the target node
-            // exchange bucket sizes
-            // alltoallv in place
-            
-        }
-
-
-        //  check done
-        //  B2 := shift B by h
-        //  (B, B2, SA) := Sort (B, B2, idx)
-        //  rebucket(B, B2)
-        //  done := check-all-singleton(B)
-    }
-
-    return SA;
-}
-
-// TODO in the end make it work on vecot rof mpi_vectors
-static mpi_vector<size_t>
-suffixArray(mpi_vector<char> &genome) {
-    assert(genome.rank != genome.nprocs - 1 || genome[genome.size() - 1] == '$');
-    mpi_vector<size_t> B(genome);
     return B;
 }
 
@@ -156,10 +87,12 @@ int main(int argc, char *argv[]) {
     mpi_vector<char> genome(MPI_COMM_WORLD, data_source, 0);
     genome.push_back('$');
     
-    std::cout << "Node[" << genome.rank << "]: got genome: " << genome << "\n";
+    std::cout << "Node[" << genome.rank << "]: initial genome: " << genome << "\n";
 
     auto B = suffixArray(genome);
+    auto sorted_genome = mpi_vector<char>(B);
 
+    std::cout << "Node[" << genome.rank << "]: sorted genome: " << sorted_genome << "\n";
     std::cout << "Node[" << genome.rank << "] B: " << B << "\n";
 
     MPI_Finalize();

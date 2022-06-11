@@ -29,13 +29,19 @@ public:
     size_t size() const;
 
     uint64_t global_index(size_t index) const;
+    uint64_t global_offset() const;
 
     size_t node_with_global_index(uint64_t index) const;
 
     // Wrapped MPI operations
 
-    // Gathers all data at process with [rank]. Other processes get empty vector.
-    std::vector<T> gather(int rank);
+    // Gathers all data at process with [root]. Other processes get empty vector.
+    std::vector<T> gather(int root);
+
+    // Distributes [data] to processes according to chunk_sizes.
+    // [data] is insignificant at non-root processes.
+    // [data] must have the same size as global_size.
+    void scatter(const std::vector<T> &data, int root);
     
 
 private:
@@ -116,6 +122,11 @@ uint64_t mpi_vector<T>::global_index(size_t index) const {
 }
 
 template <typename T>
+uint64_t mpi_vector<T>::global_offset() const {
+    return global_index(0);
+}
+
+template <typename T>
 uint64_t mpi_vector<T>::node_with_global_index(uint64_t global_index) const {
     assert(global_index < global_size);
 
@@ -150,28 +161,57 @@ void mpi_vector<T>::update_chunks() {
     global_size = offset;
 }
 
+template <typename T>
+static std::pair<std::vector<int>, std::vector<int>>
+counts_displacements(const std::vector<size_t> &chunk_sizes) {
+    std::vector<int> counts(chunk_sizes.size());
+    std::vector<int> displs(chunk_sizes.size());
+
+    int offset = 0;
+    for (size_t i = 0; i < chunk_sizes.size(); i++){
+        counts[i] = sizeof(T) * chunk_sizes[i];
+        displs[i] = offset;
+        offset += counts[i];
+    }
+
+    return {counts, displs};
+}
 
 template <typename T>
 std::vector<T> mpi_vector<T>::gather(int root) {
     if (rank == root) {
         std::vector<T> buff(global_size);
-        std::vector<int> recvcounts(chunk_sizes.size());
-        std::vector<int> displs(chunk_sizes.size());
+        auto [counts, displs] = counts_displacements<T>(chunk_sizes);
 
-        int offset = 0;
-        for (size_t i = 0; i < chunk_sizes.size(); i++){
-            recvcounts[i] = sizeof(T) * chunk_sizes[i];
-            displs[i] = offset;
-            offset += recvcounts[i];
-        }
-
-        MPI_Gatherv(datavec.data(), sizeof(T) * datavec.size(), MPI_BYTE, buff.data(), recvcounts.data(), displs.data(), MPI_BYTE, root, comm);
+        MPI_Gatherv(
+            datavec.data(), sizeof(T) * datavec.size(), MPI_BYTE,
+            buff.data(), counts.data(), displs.data(), MPI_BYTE, root, comm
+        );
         return buff;
     } else {
-        MPI_Gatherv(datavec.data(), sizeof(T) * datavec.size(), MPI_BYTE, nullptr, nullptr, nullptr, nullptr, root, comm);
+        MPI_Gatherv(
+            datavec.data(), sizeof(T) * datavec.size(), MPI_BYTE,
+            nullptr, nullptr, nullptr, nullptr, root, comm
+        );
         return std::vector<T>();
     }
 }
 
+
+template <typename T>
+void mpi_vector<T>::scatter(const std::vector<T> &data, int root) {
+    if (rank == root) {
+        auto [counts, displs] = counts_displacements<T>(chunk_sizes);
+        MPI_Scatterv(
+            data.data(), counts.data(), displs.data(), MPI_BYTE,
+            datavec.data(), sizeof(T) * datavec.size(), MPI_BYTE, root, comm
+        );
+    } else {
+        MPI_Scatterv(
+            nullptr, nullptr, nullptr, nullptr,
+            datavec.data(), sizeof(T) * datavec.size(), MPI_BYTE, root, comm
+        );
+    }
+}
 
 #endif // _MPI_VECTOR_H_
