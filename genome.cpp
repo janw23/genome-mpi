@@ -147,7 +147,6 @@ std::vector<std::size_t> gspf(std::string const &genome, std::vector<std::any> &
         snapshot(dbg, B2);
         snapshot(dbg, SA);
 
-        break;
         // Rebucket.
         {
             std::size_t g = 0;
@@ -164,6 +163,8 @@ std::vector<std::size_t> gspf(std::string const &genome, std::vector<std::any> &
             }
             if(singletons == B.size()) break; // Check algorithm-done condition.
         }
+
+        snapshot(dbg, B);
     }
 
     return SA;
@@ -205,11 +206,14 @@ suffixArray(mpi_vector<char> &genome, std::vector<std::any> &dbg) {
     snapshot(dbg, B);
 
     for (size_t h = 1;; h *= 2) {
+
         B.reorder(SA);
         snapshot(dbg, B);
 
         auto B2 = B;
+        auto B2_local = B2.gather(0);
         B2.shift_left(h, 0);
+        B2_local = B2.gather(0);
         snapshot(dbg, B2);
 
         { // Sort
@@ -230,10 +234,30 @@ suffixArray(mpi_vector<char> &genome, std::vector<std::any> &dbg) {
         snapshot(dbg, B2);
         snapshot(dbg, SA);
 
-        break; // TODO remove
+        { // Rebucket
+            std::tuple<size_t, size_t, size_t, uint64_t> context = {0, 0, 0, 0}; // prevB, prevB2, max, singletons
+            B.iter_apply(context, [&B, &B2](decltype(context) &ctx, size_t idx) {
+                auto [prevB, prevB2, max, singletons] = ctx;
+                if (B.global_index(idx) == 0 || prevB != B[idx] || prevB2 != B2[idx]) {
+                    max = B.global_index(idx);
+                    singletons++;
+                }
+                prevB = B[idx];
+                prevB2 = B2[idx];
+                B[idx] = max;
+                ctx = {prevB, prevB2, max, singletons};
+            });
+
+            // Broadcast info whether algorithm is done.
+            char done = (std::get<3>(context) == B.global_size());
+            MPI_Bcast(&done, 1, MPI_CHAR, B.nprocs - 1, B.comm);
+            if (done) break;
+        }
+
+        snapshot(dbg, B);
     }
 
-    return B;
+    return SA;
 }
 
 
@@ -258,6 +282,8 @@ int main(int argc, char *argv[]) {
 
     if (genome.rank == 0) {
         bool same = true;
+        std::cerr << "dbg_seq.size() = " << dbg_seq.size() << "\n";
+        std::cerr << "dbg_par.size() = " << dbg_par.size() << "\n";
         assert(dbg_seq.size() == dbg_par.size());
         for (size_t i = 0; i < dbg_par.size(); i++) {
             const auto &par = std::any_cast<std::vector<size_t>>(dbg_par[i]);
@@ -275,3 +301,6 @@ int main(int argc, char *argv[]) {
     MPI_Finalize();
     return 0;
 }
+
+// par: 34 46 6 20 26 36 10 24 11 29 39 43 1 14 3 16 7 21 27 37 33 45 5 19 25 35 9 23 31 41 47 13 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+// seq: 26 36 10 24 32 42 48 18 11 29 39 43 1 14 3 16 7 21 27 37 33 45 5 19 25 35 9 23 31 41 47 13 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0

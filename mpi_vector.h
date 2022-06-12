@@ -5,6 +5,7 @@
 #include <cinttypes>
 #include <vector>
 #include <algorithm>
+#include <numeric>
 #include <cassert>
 #include "data_source.h"
 
@@ -35,6 +36,7 @@ public:
 
     uint64_t global_index(size_t index) const;
     uint64_t global_offset() const;
+    uint64_t global_size() const;
 
     size_t node_with_global_index(uint64_t index) const;
 
@@ -42,7 +44,7 @@ public:
     // a function (context, local_index) -> void
     // and passing the context between the nodes.
     template <typename Context, typename Func>
-    void iter_apply(Context ctx, Func f);
+    void iter_apply(Context &ctx, Func f);
 
     // Element [local_idx] goes to position global_indices[local_idx] in global array.
     void reorder(const mpi_vector<uint64_t> &global_indices);
@@ -57,8 +59,7 @@ public:
     // [data] must have the same size as global_size.
     void scatter(const std::vector<T> &data, int root);
     
-
-    void shift_left(size_t dist, T pad_val);
+    void shift_left(uint64_t dist, T pad_val);
 
 
 private:
@@ -66,7 +67,7 @@ private:
 
     std::vector<size_t> chunk_sizes;
     uint64_t chunk_offset;
-    uint64_t global_size;
+    uint64_t glob_size;
 
     void update_chunks();
 };
@@ -159,8 +160,13 @@ uint64_t mpi_vector<T>::global_offset() const {
 }
 
 template <typename T>
+uint64_t mpi_vector<T>::global_size() const {
+    return this->glob_size;
+}
+
+template <typename T>
 uint64_t mpi_vector<T>::node_with_global_index(uint64_t global_index) const {
-    assert(global_index < global_size);
+    assert(global_index < glob_size);
 
     // This brutal solution is okay because there are not that many nodes.
     uint64_t offset = 0;
@@ -190,12 +196,12 @@ void mpi_vector<T>::update_chunks() {
         if (i == static_cast<size_t>(rank)) chunk_offset = offset;
         offset += chunk_sizes[i];
     }
-    global_size = offset;
+    glob_size = offset;
 }
 
 template <typename T>
 template <typename Context, typename Func>
-void mpi_vector<T>::iter_apply(Context ctx, Func f) {
+void mpi_vector<T>::iter_apply(Context &ctx, Func f) {
     if (rank > 0) {
         MPI_Recv(&ctx, sizeof(ctx), MPI_BYTE, rank - 1, MPI_ANY_TAG, comm, MPI_STATUS_IGNORE);
     }
@@ -226,7 +232,6 @@ counts_displacements(const std::vector<size_t> &chunk_sizes) {
 // TODO remove
 template <typename T>
 static void printvec(std::string name, std::vector<T> const &vec) {
-    return;
     std::cerr << name << ":";
     for (T e : vec) std::cerr << " " << e;
     std::cerr << "\n";
@@ -279,7 +284,7 @@ void mpi_vector<T>::reorder(const mpi_vector<uint64_t> &global_indices) {
 template <typename T>
 std::vector<T> mpi_vector<T>::gather(int root) const {
     if (rank == root) {
-        std::vector<T> buff(global_size);
+        std::vector<T> buff(glob_size);
         auto [counts, displs] = counts_displacements<T>(chunk_sizes);
 
         MPI_Gatherv(
@@ -313,35 +318,49 @@ void mpi_vector<T>::scatter(const std::vector<T> &data, int root) {
 }
 
 template <typename T>
-static void shift_left(std::vector<T> &vec, size_t dist) {
-    for (size_t i = dist; i < vec.size(); i++) {
+static void shift_left(std::vector<T> &vec, uint64_t dist) {
+    if (dist >= static_cast<uint64_t>(vec.size())) return;
+    for (size_t i = static_cast<size_t>(dist); i < vec.size(); i++) {
         vec[i - dist] = vec[i];
     }
 }
 
 template <typename T>
-void mpi_vector<T>::shift_left(size_t dist, T pad_val) {
-    assert(dist <= datavec.size());
-    if (rank == 0) {
-        ::shift_left(datavec, dist);
-        MPI_Recv(
-            &datavec[datavec.size() - dist], sizeof(T) * dist,
-            MPI_BYTE, rank + 1, MPI_ANY_TAG, comm, MPI_STATUS_IGNORE
-        );
-    } else if (rank == nprocs - 1) { 
-        MPI_Send(datavec.data(), sizeof(T) * dist, MPI_BYTE, rank - 1, 0, comm);
-        ::shift_left(datavec, dist);
-        std::fill(datavec.end() - dist, datavec.end(), pad_val);
-    } else {
-        std::vector<T> sendbuf(datavec.begin(), datavec.begin() + dist);
-        std::vector<T> recvbuf(dist);
-        MPI_Sendrecv(
-            sendbuf.data(), sizeof(T) * dist, MPI_BYTE, rank - 1, 0,
-            recvbuf.data(), sizeof(T) * dist, MPI_BYTE, rank + 1, MPI_ANY_TAG, comm, MPI_STATUS_IGNORE
-        );
-        ::shift_left(datavec, dist);
-        std::copy(recvbuf.cbegin(), recvbuf.cend(), datavec.end() - dist);
+void mpi_vector<T>::shift_left(uint64_t dist, T pad_val) {
+    std::vector<size_t> sendcounts(nprocs);
+    // TODO this is not optimal
+    for (size_t i = 0; i < size(); i++) {
+        if (global_index(i) < dist) continue;
+        auto gidx = global_index(i) - dist;
+        sendcounts[node_with_global_index(gidx)]++;
     }
+
+    // TODO this is not optimal
+    std::vector<size_t> recvcounts(nprocs);
+    for (uint64_t i = 0; i < size(); i++) {
+        auto gidx = global_index(i) + dist;
+        if (gidx < glob_size) {
+            recvcounts[node_with_global_index(gidx)]++;
+        }
+    }
+
+    auto recvoffset = recvcounts[rank];
+    sendcounts[rank] = 0;
+    recvcounts[rank] = 0;
+
+    auto [send_bytes, send_displs] = counts_displacements<T>(sendcounts);
+    auto [recv_bytes, recv_displs] = counts_displacements<T>(recvcounts);
+
+    auto sendoffset = global_offset() >= dist ? 0 : dist - global_offset(); 
+    std::vector<T> recvbuf(std::accumulate(recvcounts.begin(), recvcounts.end(), 0));
+    MPI_Alltoallv(
+        datavec.data() + sendoffset, send_bytes.data(), send_displs.data(), MPI_BYTE,
+        recvbuf.data(), recv_bytes.data(), recv_displs.data(), MPI_BYTE, comm
+    );
+
+    ::shift_left(datavec, dist);
+    std::copy(recvbuf.begin(), recvbuf.end(), datavec.begin() + recvoffset);
+    std::fill(datavec.begin() + recvoffset + recvbuf.size(), datavec.end(), pad_val);
 }
 
 
