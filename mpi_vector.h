@@ -50,7 +50,7 @@ public:
     // Wrapped standard MPI operations
 
     // Gathers all data at process with [root]. Other processes get empty vector.
-    std::vector<T> gather(int root);
+    std::vector<T> gather(int root) const;
 
     // Distributes [data] to processes according to chunk_sizes.
     // [data] is insignificant at non-root processes.
@@ -275,7 +275,7 @@ void mpi_vector<T>::reorder(const mpi_vector<uint64_t> &global_indices) {
 }
 
 template <typename T>
-std::vector<T> mpi_vector<T>::gather(int root) {
+std::vector<T> mpi_vector<T>::gather(int root) const {
     if (rank == root) {
         std::vector<T> buff(global_size);
         auto [counts, displs] = counts_displacements<T>(chunk_sizes);

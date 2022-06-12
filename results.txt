@@ -1,8 +1,0 @@
-Node[3]: initial genome: A C C G T C $
-Node[0]: initial genome: A C G T A C
-Node[1]: initial genome: A C A C C G
-Node[2]: initial genome: C T A C C G
-Node[2] post B: 7 22 1 7 7 18
-Node[3] post B: 1 7 7 18 22 7 0
-Node[0] post B: 1 7 18 22 1 7
-Node[1] post B: 1 7 1 7 7 18
