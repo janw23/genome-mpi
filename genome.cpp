@@ -80,6 +80,12 @@ suffixArray(mpi_vector<char> &genome) {
         });
     }
 
+    for (size_t h = 1;; h *= 2) {
+        B.reorder(SA);
+
+        break; // TODO remove
+    }
+
     return B;
 }
 
@@ -97,10 +103,8 @@ int main(int argc, char *argv[]) {
     std::cout << "Node[" << genome.rank << "]: initial genome: " << genome << "\n";
 
     auto B = suffixArray(genome);
-    auto sorted_genome = mpi_vector<char>(B);
 
-    std::cout << "Node[" << genome.rank << "]: sorted genome: " << sorted_genome << "\n";
-    std::cout << "Node[" << genome.rank << "] B: " << B << "\n";
+    std::cout << "Node[" << genome.rank << "] post B: " << B << "\n";
 
     MPI_Finalize();
     return 0;

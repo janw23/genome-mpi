@@ -4,6 +4,7 @@
 #include <mpi.h>
 #include <cinttypes>
 #include <vector>
+#include <algorithm>
 #include <cassert>
 #include "data_source.h"
 
@@ -37,8 +38,14 @@ public:
 
     size_t node_with_global_index(uint64_t index) const;
 
+    // Iterate over whole vector, at each step applying
+    // a function (context, local_index) -> void
+    // and passing the context between the nodes.
     template <typename Context, typename Func>
     void iter_apply(Context ctx, Func f);
+
+    // Element [local_idx] goes to position global_indices[local_idx] in global array.
+    void reorder(const mpi_vector<uint64_t> &global_indices);
 
     // Wrapped standard MPI operations
 
@@ -79,8 +86,8 @@ mpi_vector<T>::mpi_vector(MPI_Comm comm)
 : comm(comm), rank(get_rank(comm)), nprocs(get_nprocs(comm)), chunk_sizes(nprocs) {}
 
 template <typename T>
-mpi_vector<T>::mpi_vector(MPI_Comm comm, size_t size) : mpi_vector(comm) {
-    datavec = std::vector<T>(size);
+mpi_vector<T>::mpi_vector(MPI_Comm comm, size_t local_size) : mpi_vector(comm) {
+    datavec = std::vector<T>(local_size);
     update_chunks();
 }
 
@@ -214,24 +221,58 @@ counts_displacements(const std::vector<size_t> &chunk_sizes) {
     return {counts, displs};
 }
 
-// template <typename T>
-// T mpi_vector<T>::last_from_prev_chunk(T default_val) {
-//     if (rank == 0) {
-//         MPI_Send(&datavec[datavec.size() - 1], sizeof(T), MPI_BYTE, rank + 1, 0, comm);
-//         return default_val; 
-//     } else if (rank == nprocs - 1) {
-//         T buf;
-//         MPI_Sendrecv(
-//             &datavec[datavec.size() - 1], sizeof(T), MPI_BBYTE, rank + 1, 0,
-//             &buf, sizeof(T), MPI_BYTE, rank - 1, MPI_ANY_TAG, comm, MPI_STATUS_IGNORE
-//         );
-//         return buf;
-//     } else {
-//         T buf;
-//         MPI_Recv(&buf, sizeof(T), MPI_BYTE, rank - 1, MPI_ANY_TAG, comm, MPI_STATUS_IGNORE);
-//         return buf;
-//     }
-// }
+// TODO remove
+template <typename T>
+static void printvec(std::string name, std::vector<T> const &vec) {
+    return;
+    std::cerr << name << ":";
+    for (T e : vec) std::cerr << " " << e;
+    std::cerr << "\n";
+}
+
+template <typename T>
+void mpi_vector<T>::reorder(const mpi_vector<uint64_t> &global_indices) {
+    assert(size() == global_indices.size());
+
+    // Count the number of elements to send to each process from this one.
+    std::vector<size_t> sendcounts(nprocs);
+    for (size_t i = 0; i < size(); i++) {
+        sendcounts[node_with_global_index(global_indices[i])]++; // TODO this might be slow due to brutal impl
+    }
+
+    std::vector<size_t> bucket_displacements(nprocs);
+    for (size_t i = 1; i < sendcounts.size(); i++) {
+        bucket_displacements[i] = bucket_displacements[i-1] + sendcounts[i-1];
+    }
+
+    // Put data in buckets depending on their destination process.
+    std::vector<std::pair<T, uint64_t>> sendbuf(size()); // contains data and global index
+    for (size_t i = 0; i < size(); i++) {
+        auto dst = node_with_global_index(global_indices[i]);
+        sendbuf[bucket_displacements[dst]] = {datavec[i], global_indices[i]};
+        bucket_displacements[dst]++;
+    }
+    
+    // Determine how much data each process will receive from each one.
+    std::vector<size_t> recvcounts(sendcounts.size());
+    MPI_Alltoall(sendcounts.data(), 1, MPI_UINT64_T, recvcounts.data(), 1, MPI_UINT64_T, comm);
+
+    // Exchange the actual data.
+    auto [send_bytes, send_displs] = counts_displacements<std::pair<T, uint64_t>>(sendcounts);
+    auto [recv_bytes, recv_displs] = counts_displacements<std::pair<T, uint64_t>>(recvcounts);
+
+    std::vector<std::pair<T, uint64_t>> recvbuf(sendbuf.size());
+    MPI_Alltoallv(
+        sendbuf.data(), send_bytes.data(), send_displs.data(), MPI_BYTE,
+        recvbuf.data(), recv_bytes.data(), recv_displs.data(), MPI_BYTE, comm
+    );
+
+    // Place the received data in the correct index locally.
+    for (const auto &data : recvbuf) {
+        size_t local_idx = data.second - global_offset();
+        datavec[local_idx] = data.first;
+    }
+}
 
 template <typename T>
 std::vector<T> mpi_vector<T>::gather(int root) {
