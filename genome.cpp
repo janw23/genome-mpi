@@ -114,11 +114,13 @@ std::vector<std::size_t> gspf(std::string const &genome, std::vector<std::any> &
         }
 
         snapshot(dbg, B);
-        break;
 
         // Shift B.
         std::vector<std::size_t> B2(B.size());
         std::copy(B.begin() + h, B.end(), B2.begin()); // copy values shifted by h
+
+        snapshot(dbg, B2);
+        break;
 
         {   // Sort according to B, B2 keeping original indices.
             std::vector<std::tuple<std::size_t, std::size_t, std::size_t>> tmp(B.size());
@@ -192,8 +194,11 @@ suffixArray(mpi_vector<char> &genome, std::vector<std::any> &dbg) {
 
     for (size_t h = 1;; h *= 2) {
         B.reorder(SA);
-
         snapshot(dbg, B);
+
+        auto B2 = B;
+        B2.shift_left(h, 0);
+        snapshot(dbg, B2);
 
         break; // TODO remove
     }

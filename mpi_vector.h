@@ -58,6 +58,8 @@ public:
     void scatter(const std::vector<T> &data, int root);
     
 
+    void shift_left(size_t dist, T pad_val);
+
 
 private:
     std::vector<T> datavec;
@@ -307,6 +309,38 @@ void mpi_vector<T>::scatter(const std::vector<T> &data, int root) {
             nullptr, nullptr, nullptr, nullptr,
             datavec.data(), sizeof(T) * datavec.size(), MPI_BYTE, root, comm
         );
+    }
+}
+
+template <typename T>
+static void shift_left(std::vector<T> &vec, size_t dist) {
+    for (size_t i = dist; i < vec.size(); i++) {
+        vec[i - dist] = vec[i];
+    }
+}
+
+template <typename T>
+void mpi_vector<T>::shift_left(size_t dist, T pad_val) {
+    assert(dist <= datavec.size());
+    if (rank == 0) {
+        ::shift_left(datavec, dist);
+        MPI_Recv(
+            &datavec[datavec.size() - dist], sizeof(T) * dist,
+            MPI_BYTE, rank + 1, MPI_ANY_TAG, comm, MPI_STATUS_IGNORE
+        );
+    } else if (rank == nprocs - 1) { 
+        MPI_Send(datavec.data(), sizeof(T) * dist, MPI_BYTE, rank - 1, 0, comm);
+        ::shift_left(datavec, dist);
+        std::fill(datavec.end() - dist, datavec.end(), pad_val);
+    } else {
+        std::vector<T> sendbuf(datavec.begin(), datavec.begin() + dist);
+        std::vector<T> recvbuf(dist);
+        MPI_Sendrecv(
+            sendbuf.data(), sizeof(T) * dist, MPI_BYTE, rank - 1, 0,
+            recvbuf.data(), sizeof(T) * dist, MPI_BYTE, rank + 1, MPI_ANY_TAG, comm, MPI_STATUS_IGNORE
+        );
+        ::shift_left(datavec, dist);
+        std::copy(recvbuf.cbegin(), recvbuf.cend(), datavec.end() - dist);
     }
 }
 
