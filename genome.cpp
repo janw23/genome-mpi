@@ -120,14 +120,21 @@ std::vector<std::size_t> gspf(std::string const &genome, std::vector<std::any> &
         std::copy(B.begin() + h, B.end(), B2.begin()); // copy values shifted by h
 
         snapshot(dbg, B2);
-        break;
 
         {   // Sort according to B, B2 keeping original indices.
             std::vector<std::tuple<std::size_t, std::size_t, std::size_t>> tmp(B.size());
             for (std::size_t i = 0; i < B.size(); i++) {
                 tmp[i] = std::make_tuple(B[i], B2[i], i);
             }
-            std::sort(tmp.begin(), tmp.end()); // TODO no need to compare by third element of tuple
+            auto comp = [](
+                const std::tuple<size_t, size_t, size_t> &a,
+                const std::tuple<size_t, size_t, size_t> &b){
+                    return 
+                        std::tie(std::get<0>(a), std::get<1>(a))
+                        <
+                        std::tie(std::get<0>(b), std::get<1>(b));
+            };
+            std::sort(tmp.begin(), tmp.end(), comp); // TODO no need to compare by third element of tuple
 
             for (std::size_t i = 0; i < B.size(); i++) {
                 B[i] = std::get<0>(tmp[i]);
@@ -136,6 +143,11 @@ std::vector<std::size_t> gspf(std::string const &genome, std::vector<std::any> &
             }
         }
 
+        snapshot(dbg, B);
+        snapshot(dbg, B2);
+        snapshot(dbg, SA);
+
+        break;
         // Rebucket.
         {
             std::size_t g = 0;
@@ -199,6 +211,24 @@ suffixArray(mpi_vector<char> &genome, std::vector<std::any> &dbg) {
         auto B2 = B;
         B2.shift_left(h, 0);
         snapshot(dbg, B2);
+
+        { // Sort
+            auto comp = [](
+                const std::tuple<size_t, size_t, size_t> &a,
+                const std::tuple<size_t, size_t, size_t> &b){
+                    return 
+                        std::tie(std::get<0>(a), std::get<1>(a))
+                        <
+                        std::tie(std::get<0>(b), std::get<1>(b));
+            };
+            auto tmp = indexed(B, B2);
+            mpi_sort(tmp, comp);
+            unpack_indexed(tmp, B, B2, SA);
+        }
+
+        snapshot(dbg, B);
+        snapshot(dbg, B2);
+        snapshot(dbg, SA);
 
         break; // TODO remove
     }
