@@ -38,7 +38,9 @@ public:
     uint64_t global_offset() const;
     uint64_t global_size() const;
 
-    size_t node_with_global_index(uint64_t index) const;
+    size_t local_index(uint64_t index) const;
+
+    int node_with_global_index(uint64_t index) const;
 
     // Iterate over whole vector, at each step applying
     // a function (context, local_index) -> void
@@ -165,14 +167,20 @@ uint64_t mpi_vector<T>::global_size() const {
 }
 
 template <typename T>
-uint64_t mpi_vector<T>::node_with_global_index(uint64_t global_index) const {
+size_t mpi_vector<T>::local_index(uint64_t index) const {
+    assert(node_with_global_index(index) == rank);
+    return index - global_offset();
+}
+
+template <typename T>
+int mpi_vector<T>::node_with_global_index(uint64_t global_index) const {
     assert(global_index < glob_size);
 
     // This brutal solution is okay because there are not that many nodes.
     uint64_t offset = 0;
     for (size_t i = 0; i < chunk_sizes.size(); i++) {
         if (offset <= global_index && global_index < offset + chunk_sizes[i]) {
-            return i;
+            return static_cast<int>(i);
         }
         offset += chunk_sizes[i];
     }

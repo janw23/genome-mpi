@@ -30,11 +30,21 @@ std::ostream &operator<<(std::ostream &os, mpi_vector<T> &vec) {
 
 template <typename T>
 static void snapshot(std::vector<std::any> &dbg, const mpi_vector<T> &vec) {
-    dbg.push_back(vec.gather(0));
+    //dbg.push_back(vec.gather(0));
 }
 template <typename T>
 static void snapshot(std::vector<std::any> &dbg, const std::vector<T> &vec) {
-    dbg.push_back(vec);
+    //dbg.push_back(vec);
+}
+
+uint64_t num_occurences_naive(std::string const &genome, std::string const &query) {
+    uint64_t num_occurences_naive = 0;
+    std::size_t pos = 0;
+    while ((pos = genome.find(query, pos)) != std::string::npos) {
+        num_occurences_naive++;
+        pos++;
+    }
+    return num_occurences_naive;
 }
 // DEBUG HELPERS END
 
@@ -65,7 +75,6 @@ std::vector<std::size_t> gspf(std::string const &genome, std::vector<std::any> &
     // Put k-mers into B.
     // TODO Squeeze k>1 - mers into B here to optimize num iterations.
     // TODO starting with k>1 would optimize runtime, but not mem usage.
-    std::cerr << "seq genome " << genome << "\n";
     std::vector<std::size_t> B(genome.begin(), genome.end());
 
     std::vector<std::size_t> SA(B.size());
@@ -172,7 +181,7 @@ std::vector<std::size_t> gspf(std::string const &genome, std::vector<std::any> &
 
 // TODO in the end make it work on vecot rof mpi_vectors
 static mpi_vector<size_t>
-suffixArray(mpi_vector<char> &genome, std::vector<std::any> &dbg) {
+suffix_array(mpi_vector<char> &genome, std::vector<std::any> &dbg) {
     assert(genome.rank != genome.nprocs - 1 || genome[genome.size() - 1] == '$');
     mpi_vector<size_t> B(genome);
     mpi_vector<uint64_t> SA(B.comm, B.size());
@@ -260,10 +269,158 @@ suffixArray(mpi_vector<char> &genome, std::vector<std::any> &dbg) {
     return SA;
 }
 
+static std::pair<uint64_t, bool> find_lower(const mpi_vector<size_t> &SA,
+                                            const mpi_vector<char> &genome,
+                                            const std::string &query) {
+    auto comm = genome.comm;
+    const int done_tag = 0, cmp_tag = 1, lsa_tag = 2;
+    MPI_Request requests[3];
+
+    std::pair<uint64_t, bool> done_buf, done_msg; // received when algorithm stops and holds the result
+    std::tuple<uint64_t, uint64_t, uint64_t> cmp_buf, cmp_msg; // left, right, SA[(l+r)/2]
+    std::pair<uint64_t, uint64_t> lsa_buf, lsa_msg; // left, right
+
+    // This will determine whether we are the starting process.
+    lsa_msg = {0, genome.global_size()};
+    bool starter_node = genome.rank == genome.node_with_global_index((lsa_msg.first + lsa_msg.second) / 2);
+
+    bool done = false;
+    while (!done) {
+        MPI_Irecv(&done_buf, sizeof(done_buf), MPI_BYTE, MPI_ANY_SOURCE, done_tag, comm, &requests[done_tag]);
+        MPI_Irecv(&cmp_buf, sizeof(cmp_buf), MPI_BYTE, MPI_ANY_SOURCE, cmp_tag, comm, &requests[cmp_tag]);
+        MPI_Irecv(&lsa_buf, sizeof(lsa_buf), MPI_BYTE, MPI_ANY_SOURCE, lsa_tag, comm, &requests[lsa_tag]);
+
+        int msg_tag = lsa_tag; // alos an initial message for starter node
+        if (!starter_node) MPI_Waitany(3, requests, &msg_tag, MPI_STATUS_IGNORE);
+        else starter_node = false;
+
+        if (msg_tag == done_tag) done_msg = done_buf;
+        else if (msg_tag == cmp_tag) cmp_msg = cmp_buf;
+        else if (msg_tag == lsa_tag) lsa_msg = lsa_buf;
+
+        bool repeat = true; // allows to repeat the request locally
+        while (repeat) {
+            repeat = false;
+
+            if (msg_tag == done_tag) {
+                done = true;
+                break; // TODO
+            } else if (msg_tag == cmp_tag) {
+                auto [left, right, sa] = cmp_msg;
+                size_t lidx = genome.local_index(sa);
+                int cmp = strcmp(query.data(), &genome.local_data()[lidx]);
+
+                assert(left <= right);
+                if (left == right) {
+                    // Broadcast finding of the results
+                    for (int dst = 0; dst < genome.nprocs; dst++) {
+                        if (dst != genome.rank) {
+                            done_msg = {left, cmp == 0};
+                            MPI_Send(&done_msg, sizeof(done_msg), MPI_BYTE, dst, done_tag, comm);
+                        }
+                    }
+                    repeat = true;
+                    msg_tag = done_tag;
+                } else { // left != right
+                    uint64_t center = (left + right) / 2;
+                    if (cmp < 0) {
+                        right = center - 1;
+                    } else if (cmp == 0) {
+                        right = center;
+                    } else {
+                        left = center + 1;
+                    }
+
+                    auto node = genome.node_with_global_index(center);
+                    lsa_msg = {left, right};
+                    msg_tag = lsa_tag;
+                    repeat = node == genome.rank;
+                    if (!repeat) MPI_Send(&lsa_msg, sizeof(lsa_msg), MPI_BYTE, node, lsa_tag, comm);
+                }
+            } else { // lsa_tag
+                auto [left, right] = lsa_msg;
+                uint64_t gidx = (left + right) / 2;
+                size_t lidx = SA.local_index(gidx);
+                auto sa = SA[lidx];
+
+                auto node = SA.node_with_global_index(sa);
+                cmp_msg = {left, right, sa};
+                msg_tag = cmp_tag;
+                repeat = node == SA.rank;
+                if (!repeat) MPI_Send(&cmp_msg, sizeof(cmp_msg), MPI_BYTE, node, cmp_tag, comm);
+            }
+        }
+    }
+
+    MPI_Request_free(&requests[done_tag]);
+    MPI_Request_free(&requests[cmp_tag]);
+    MPI_Request_free(&requests[lsa_tag]);
+
+    return done_msg;
+}
+
+// static uint64_t find_lower(const mpi_vector<size_t> &SA,
+//                            const mpi_vector<char> &genome,
+//                            const std::string &query) {
+    
+//     const int msg_tag = 0;
+//     const int done_tag = 1;
+//     char done = 0;
+//     MPI_request requests[2];
+//     MPI_Irecv(&done, 1, MPI_CHAR, MPI_ANY_SOURCE, done_tag, genome.comm, &requests[done_tag]);
+    
+//     while (!done) {
+//         std::tuple<uint64_t, uint64_t, uint64_t> msg;
+//         MPI_Irecv(&interval, sizeof(interval), MPI_BYTE, MPI_ANY_SOURCE, msg_tag, genome.comm, &requests[msg_tag]);
+
+//         int index;
+//         MPI_Waitany(2, requests, &index, MPI_STATUS_IGNORE);
+
+//         if (index == done_tag) {
+//             done = true;
+//             MPI_Request_free(&requests[msg_tag]);
+//         } else {
+//             // Actually got a requests to process.
+//             auto [left, right, gidx] = interval;
+//             assert(genome.node_with_global_index(gidx) == genome.rank()); // make sure we are responsible for this index
+//             assert (left <= right);
+            
+//             uint64_t center = (left + right) / 2;
+//             auto local_index = genome.local_index(gidx);
+
+//             int cmp = strcmp(genome.local_data().data(), query.data());
+
+//             if (left == right) {
+//                 if (cmp == 0) {
+//                     // found!
+//                 } else {
+//                     // not found, stop!
+//                 }
+//             } else {
+//                 if (cmp < 0) {
+//                     right = center - 1;
+//                 } else if (cmp == 0) {
+//                     right = center;
+//                 } else {
+//                     left = center + 1;
+//                 }
+//             }
+
+//         }
+//     }
+// }
+
+static uint64_t num_occurences(const mpi_vector<size_t> &SA,
+                               const mpi_vector<char> &genome,
+                               const std::string &query) {
+
+    assert(SA.rank == genome.rank);
+   auto lower = find_lower(SA, genome, query);
+   if (genome.rank == 0) std::cerr << "lower: (" << lower.first << ", " << lower.second << ")\n";
+}
 
 int main(int argc, char *argv[]) {
     MPI_Init(&argc, &argv);
-    //MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_RETURN); // TODO just for debug
 
     auto [num_genomes, num_queries, genome_in, queries_in, queries_out] = parseArgs(argc, argv);
     DataSource data_source(genome_in.data());
@@ -272,35 +429,19 @@ int main(int argc, char *argv[]) {
     genome.push_back('$');
     
     std::vector<std::any> dbg_seq, dbg_par;
-    auto full_genome = genome.gather(0);
-    if (genome.rank == 0) std::cerr << "full_genome.size() = " << full_genome.size() << "\n";
+    auto full_genome_vec = genome.gather(0);
+    auto full_genome = std::string(full_genome_vec.data(), full_genome_vec.size());
+    if (genome.rank == 0) auto SA_seq = gspf(full_genome, dbg_seq);
 
-    if (genome.rank == 0) gspf(std::string(full_genome.data(), full_genome.size()), dbg_seq);
-    // std::cout << "Node[" << genome.rank << "]: initial genome: " << genome << "\n";
-    auto B = suffixArray(genome, dbg_par);
-    // std::cout << "Node[" << genome.rank << "] post B: " << B << "\n";
+    auto SA = suffix_array(genome, dbg_par);
 
     if (genome.rank == 0) {
-        bool same = true;
-        std::cerr << "dbg_seq.size() = " << dbg_seq.size() << "\n";
-        std::cerr << "dbg_par.size() = " << dbg_par.size() << "\n";
-        assert(dbg_seq.size() == dbg_par.size());
-        for (size_t i = 0; i < dbg_par.size(); i++) {
-            const auto &par = std::any_cast<std::vector<size_t>>(dbg_par[i]);
-            const auto &seq = std::any_cast<std::vector<size_t>>(dbg_seq[i]);
-            if (par != seq) {
-                std::cerr << "difference at " << i << "\n";
-                std::cerr << "par: " << par << "\n";
-                std::cerr << "seq: " << seq << "\n";
-                same = false;
-            }
-        }
-        std::cerr << "par and seq are the same: " << same << "\n";
+        auto num_occurs_seq = num_occurences_naive(full_genome, "CGTC");
+        std::cerr << "num occurs seq: " << num_occurs_seq << "\n"; 
     }
+
+    auto num_occurs = num_occurences(SA, genome, "CGTC");
 
     MPI_Finalize();
     return 0;
 }
-
-// par: 34 46 6 20 26 36 10 24 11 29 39 43 1 14 3 16 7 21 27 37 33 45 5 19 25 35 9 23 31 41 47 13 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-// seq: 26 36 10 24 32 42 48 18 11 29 39 43 1 14 3 16 7 21 27 37 33 45 5 19 25 35 9 23 31 41 47 13 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
