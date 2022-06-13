@@ -56,6 +56,8 @@ public:
     // Gathers all data at process with [root]. Other processes get empty vector.
     std::vector<T> gather(int root) const;
 
+    std::vector<T> all_gather() const;
+
     // Distributes [data] to processes according to chunk_sizes.
     // [data] is insignificant at non-root processes.
     // [data] must have the same size as global_size.
@@ -307,6 +309,18 @@ std::vector<T> mpi_vector<T>::gather(int root) const {
         );
         return std::vector<T>();
     }
+}
+
+template <typename T>
+std::vector<T> mpi_vector<T>::all_gather() const {
+    std::vector<T> buff(glob_size);
+    auto [counts, displs] = counts_displacements<T>(chunk_sizes);
+
+    MPI_Allgatherv(
+        datavec.data(), sizeof(T) * datavec.size(), MPI_BYTE,
+        buff.data(), counts.data(), displs.data(), MPI_BYTE, comm
+    );
+    return buff;
 }
 
 template <typename T>

@@ -269,10 +269,16 @@ suffix_array(mpi_vector<char> &genome, std::vector<std::any> &dbg) {
     return SA;
 }
 
-static std::pair<uint64_t, bool> find_lower(const mpi_vector<size_t> &SA,
-                                            const mpi_vector<char> &genome,
-                                            const std::string &query) {
+template <typename CFunc, typename UFunc>
+static std::pair<uint64_t, bool> binsearch(const mpi_vector<size_t> &SA,
+                                           const mpi_vector<char> &genome,
+                                           const std::string &query,
+                                           uint64_t initial_left, uint64_t initial_right,
+                                           CFunc center_f, UFunc update_f) {
     auto comm = genome.comm;
+    auto full_genome_data = genome.all_gather();
+    std::string_view full_genome(full_genome_data.data(), full_genome_data.size());
+
     const int done_tag = 0, cmp_tag = 1, lsa_tag = 2;
     MPI_Request requests[3];
     bool awaiting[3] = {false, false, false};
@@ -282,9 +288,9 @@ static std::pair<uint64_t, bool> find_lower(const mpi_vector<size_t> &SA,
     std::pair<uint64_t, uint64_t> lsa_buf, lsa_msg; // left, right
 
     // This will determine whether we are the starting process.
-    lsa_msg = {0, genome.global_size()};
+    lsa_msg = {initial_left, initial_right};
     int msg_tag = lsa_tag; // alos an initial message for starter node
-    bool starter_node = genome.rank == genome.node_with_global_index((lsa_msg.first + lsa_msg.second) / 2);
+    bool starter_node = genome.rank == genome.node_with_global_index(center_f(lsa_msg.first, lsa_msg.second));
 
     bool done = false;
     while (!done) {
@@ -302,9 +308,9 @@ static std::pair<uint64_t, bool> find_lower(const mpi_vector<size_t> &SA,
                 awaiting[lsa_tag] = true;
             }
 
-            std::cerr << "Node[" << genome.rank << "] waiting " << "\n";
+            // std::cerr << "Node[" << genome.rank << "] waiting " << "\n";
             MPI_Waitany(3, requests, &msg_tag, MPI_STATUS_IGNORE);
-            std::cerr << "Node[" << genome.rank << "] got msg tag " << msg_tag << "\n";
+            // std::cerr << "Node[" << genome.rank << "] got msg tag " << msg_tag << "\n";
             if (msg_tag == done_tag) {
                 done_msg = done_buf;
                 awaiting[done_tag] = false;
@@ -319,13 +325,13 @@ static std::pair<uint64_t, bool> find_lower(const mpi_vector<size_t> &SA,
             }
         }
         else {
-            std::cerr << "Node[" << genome.rank << "] starter node " << "\n";
+            // std::cerr << "Node[" << genome.rank << "] starter node " << "\n";
             starter_node = false;
         }
         
         bool repeat = true; // allows to repeat the request locally
         while (repeat) {
-            std::cerr << "Node[" << genome.rank << "] processing " << msg_tag << "\n";
+            // std::cerr << "Node[" << genome.rank << "] processing " << msg_tag << "\n";
             repeat = false;
 
             if (msg_tag == done_tag) {
@@ -334,10 +340,12 @@ static std::pair<uint64_t, bool> find_lower(const mpi_vector<size_t> &SA,
             } else if (msg_tag == cmp_tag) {
                 auto [left, right, sa] = cmp_msg;
                 size_t lidx = genome.local_index(sa);
-                int cmp = strcmp(query.data(), &genome.local_data()[lidx]);
+                int cmp = full_genome.compare(sa, query.size(), query);
+                
+                // std::cerr << "Node[" << genome.rank << "] cmp =" << cmp << ", query = " << query << ", suffix = " << std::string(&genome.local_data()[lidx], genome.size() - lidx) << "\n";
 
                 assert(left <= right);
-                std::cerr << "Node[" << genome.rank << "] lr = (" << left << ", " << right << ")" << "\n";
+                // std::cerr << "Node[" << genome.rank << "] lr = (" << left << ", " << right << ")" << "\n";
                 if (left == right) {
                     // Broadcast finding of the results
                     for (int dst = 0; dst < genome.nprocs; dst++) {
@@ -349,33 +357,37 @@ static std::pair<uint64_t, bool> find_lower(const mpi_vector<size_t> &SA,
                     repeat = true;
                     msg_tag = done_tag;
                 } else { // left != right
-                    uint64_t center = (left + right) / 2;
-                    std::cerr << "Node[" << genome.rank << "] center " << center << "\n";
-                    if (cmp < 0) {
-                        right = center - 1;
-                    } else if (cmp == 0) {
-                        right = center;
-                    } else {
-                        left = center + 1;
-                    }
-                    center = (left + right) / 2;
+                    // uint64_t center = (left + right) / 2;
+                    uint64_t center = center_f(left, right);
+                    // std::cerr << "Node[" << genome.rank << "] center " << center << "\n";
+                    // if (cmp < 0) {
+                    //     right = center - 1;
+                    // } else if (cmp == 0) {
+                    //     right = center;
+                    // } else {
+                    //     left = center + 1;
+                    // }
+                    update_f(left, right, center, cmp);
+                    // center = (left + right) / 2;
+                    center = center_f(left, right);
 
                     auto node = genome.node_with_global_index(center);
                     lsa_msg = {left, right};
                     msg_tag = lsa_tag;
                     repeat = node == genome.rank;
-                    std::cerr << "Node[" << genome.rank << "] dstnode " << node << "\n";
+                    // std::cerr << "Node[" << genome.rank << "] dstnode " << node << "\n";
                     if (!repeat) {
-                        std::cerr << "Node[" << genome.rank << "] sending message to " << node << "\n";
+                        // std::cerr << "Node[" << genome.rank << "] sending message to " << node << "\n";
                         MPI_Send(&lsa_msg, sizeof(lsa_msg), MPI_BYTE, node, lsa_tag, comm);
-                        std::cerr << "Node[" << genome.rank << "] sent " << node << "\n";
+                        // std::cerr << "Node[" << genome.rank << "] sent " << node << "\n";
                     }    
-                    std::cerr << "Node[" << genome.rank << "] repeat " << repeat << "\n";
+                    // std::cerr << "Node[" << genome.rank << "] repeat " << repeat << "\n";
                 }
             } else { // lsa_tag
                 auto [left, right] = lsa_msg;
-                std::cerr << "Node[" << genome.rank << "] lr = (" << left << ", " << right << ")" << "\n";
-                uint64_t gidx = (left + right) / 2;
+                // std::cerr << "Node[" << genome.rank << "] lr = (" << left << ", " << right << ")" << "\n";
+                // uint64_t gidx = (left + right) / 2;
+                uint64_t gidx = center_f(left, right);
                 size_t lidx = SA.local_index(gidx);
                 auto sa = SA[lidx];
 
@@ -384,7 +396,7 @@ static std::pair<uint64_t, bool> find_lower(const mpi_vector<size_t> &SA,
                 msg_tag = cmp_tag;
                 repeat = node == SA.rank;
                 if (!repeat) MPI_Send(&cmp_msg, sizeof(cmp_msg), MPI_BYTE, node, cmp_tag, comm);
-                std::cerr << "Node[" << genome.rank << "] repeat " << repeat << "\n";
+                // std::cerr << "Node[" << genome.rank << "] repeat " << repeat << "\n";
             }
         }
     }
@@ -410,10 +422,35 @@ static uint64_t num_occurences(const mpi_vector<size_t> &SA,
                                const std::string &query) {
 
     assert(SA.rank == genome.rank);
-    auto lower = find_lower(SA, genome, query);
-    if (genome.rank == 0) std::cerr << "lower: (" << lower.first << ", " << lower.second << ")\n";
+    auto lower_center_f = [](uint64_t left, uint64_t right) { return (left + right) / 2; };
+    auto lower_update_f = [](uint64_t &left, uint64_t &right, uint64_t center, int cmp) {
+        if (cmp > 0) {
+            right = center - 1;
+        } else if (cmp == 0) {
+            right = center;
+        } else {
+            left = center + 1;
+        }
+    };
+    auto [lower, lfound] = binsearch(SA, genome, query, 0, genome.global_size() - 1, lower_center_f, lower_update_f);
+    // std::cerr << "lower: " << lower << "\n";
+    if (!lfound) return 0;
 
-    return 0;
+
+    auto upper_center_f = [](uint64_t left, uint64_t right) { return (left + right + 1) / 2; };
+    auto upper_update_f = [](uint64_t &left, uint64_t &right, uint64_t center, int cmp) {
+        if (cmp < 0) {
+            left = center + 1;
+        } else if (cmp == 0) {
+            left = center;
+        } else {
+            right = center - 1;
+        }
+    };
+    auto [upper, rfound] = binsearch(SA, genome, query, lower, genome.global_size() - 1, upper_center_f, upper_update_f);
+
+    assert(rfound);
+    return upper - lower + 1;
 }
 
 int main(int argc, char *argv[]) {
@@ -433,11 +470,12 @@ int main(int argc, char *argv[]) {
     auto SA = suffix_array(genome, dbg_par);
 
     if (genome.rank == 0) {
-        auto num_occurs_seq = num_occurences_naive(full_genome, "CGTC");
+        auto num_occurs_seq = num_occurences_naive(full_genome, "ACC");
         std::cerr << "num occurs seq: " << num_occurs_seq << "\n"; 
     }
 
-    auto num_occurs = num_occurences(SA, genome, "CGTC");
+    auto num_occurs = num_occurences(SA, genome, "ACC");
+    if (genome.rank == 0) std::cerr << "num_occurences: " << num_occurs << "\n";
 
     MPI_Finalize();
     return 0;
